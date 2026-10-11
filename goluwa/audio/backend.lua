@@ -14,6 +14,10 @@ function module.Attach(audio)
 		local state = ffi.cast(audio.mixer_state_ptr_t, input)
 		state.debug_worker_stage = 1
 		local audio_buffer = import("goluwa/bindings/audio_buffer.lua")
+		-- expose the per-thread worker mutex controls to the blocking audio loop
+		-- (only present on Windows, see goluwa/bindings/threads.lua)
+		audio_buffer._release_mutex = _G.release_worker_mutex_of_this_thread
+		audio_buffer._attain_mutex = _G.attain_worker_mutex_of_this_thread
 		state.debug_worker_stage = 2
 		audio_buffer.start{
 			sample_rate = 44100,

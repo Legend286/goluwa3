@@ -335,7 +335,16 @@ elseif ffi.os == "Windows" then
 		local hdr = audio._hdrs[i]
 
 		while bit.band(hdr.dwFlags, WHDR_DONE) == 0 do
+			-- the worker mutex serializes Lua execution across threads; drop it
+			-- while we're blocked on the wave device so other workers can run
+			if audio._release_mutex then audio._release_mutex() end
+
 			ffi.C.WaitForSingleObject(audio._hEvent, INFINITE)
+
+			if audio._attain_mutex then audio._attain_mutex() end
+
+			-- the flag may have flipped while we were unprotected
+			if bit.band(hdr.dwFlags, WHDR_DONE) ~= 0 then break end
 		end
 
 		winmm.waveOutUnprepareHeader(audio._hwo, hdr, ffi.sizeof("WAVEHDR"))

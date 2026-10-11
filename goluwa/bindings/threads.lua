@@ -45,9 +45,10 @@ local reset_pool_done
 local is_pool_done
 local signal_pool_done
 local wait_pool_done
-local close_pool_signals
-local acquire_worker_mutex
-local release_worker_mutex
+local close_pool_signals	local acquire_worker_mutex
+	local release_worker_mutex
+	local release_worker_mutex_if_owned
+
 
 if ffi.os == "Windows" then
 	ffi.cdef[[
@@ -102,6 +103,7 @@ if ffi.os == "Windows" then
 		void Sleep(uint32_t dwMilliseconds);
 
 		void* CreateMutexA(void* lpMutexAttributes, int bInitialOwner, const char* lpName);
+		uint32_t GetCurrentProcessId(void);
 		int ReleaseMutex(void* hMutex);
     ]]
 	local kernel32 = ffi.load("kernel32")
@@ -127,13 +129,20 @@ if ffi.os == "Windows" then
 	local INFINITE = ffi.new("uint32_t", 0xFFFFFFFF)
 	local WAIT_FAILED = 0xFFFFFFFF
 	local THREAD_ALL_ACCESS = 0x1F03FF
-	local main_worker_mutex = kernel32.CreateMutexA(nil, 0, "goluwa_luajit_worker_mutex")
+	local main_worker_mutex = kernel32.CreateMutexA(nil, 0, "goluwa_luajit_worker_mutex_" .. tonumber(kernel32.GetCurrentProcessId()))
 
 	function acquire_worker_mutex()
 		kernel32.WaitForSingleObject(main_worker_mutex, INFINITE)
 	end
 
 	function release_worker_mutex()
+		kernel32.ReleaseMutex(main_worker_mutex)
+	end
+
+	-- threads that block for long stretches of OS time (like the audio mixer
+	-- waiting on waveOut events) must release the worker mutex while blocked,
+	-- otherwise every other worker thread starves
+	function release_worker_mutex_if_owned()
 		kernel32.ReleaseMutex(main_worker_mutex)
 	end
 
@@ -489,6 +498,9 @@ else
 	end
 end
 
+threads.acquire_worker_mutex = acquire_worker_mutex
+threads.release_worker_mutex = release_worker_mutex
+
 function threads.pointer_encode(obj)
 	local buf = buffer.new()
 	buf:encode(obj)
@@ -562,6 +574,7 @@ local worker_bootstrap = [=[
 		ffi.cdef[[
 			typedef uint32_t (__stdcall *thread_callback)(void*);
 			void* CreateMutexA(void* lpMutexAttributes, int bInitialOwner, const char* lpName);
+		uint32_t GetCurrentProcessId(void);
 			uint32_t WaitForSingleObject(void* hHandle, uint32_t dwMilliseconds);
 			int ReleaseMutex(void* hMutex);
 			int CloseHandle(void* hObject);
@@ -575,7 +588,7 @@ local worker_bootstrap = [=[
 			-- On Windows, serialize Lua state initialization to avoid
 			-- concurrent FFI/JIT internal state corruption in LuaJIT.
 			if ffi.os == "Windows" then
-				local mutex = _init_kernel32.CreateMutexA(nil, 0, "goluwa_luajit_init_mutex")
+				local mutex = _init_kernel32.CreateMutexA(nil, 0, "goluwa_luajit_init_mutex_" .. tonumber(_init_kernel32.GetCurrentProcessId()))
 				_init_kernel32.WaitForSingleObject(mutex, _INFINITE)
 				require("goluwa.global_environment")
 				_init_kernel32.ReleaseMutex(mutex)
@@ -593,7 +606,7 @@ local worker_bootstrap = [=[
 	-- in a process-wide mutex to prevent concurrent allocator access.
 	local _worker_mutex
 	if ffi.os == "Windows" then
-		_worker_mutex = _init_kernel32.CreateMutexA(nil, 0, "goluwa_luajit_worker_mutex")
+		_worker_mutex = _init_kernel32.CreateMutexA(nil, 0, "goluwa_luajit_worker_mutex_" .. tonumber(_init_kernel32.GetCurrentProcessId()))
 	end
 
 	local function main(udata)
@@ -623,11 +636,23 @@ local worker_bootstrap = [=[
 		return callback_result
     end
 
+	local _release_worker_mutex_of_this_thread
+	local _attain_worker_mutex_of_this_thread
+
 	local function main_protected(udata)
 		-- On Windows, acquire the worker mutex to serialize all Lua execution
 		-- across worker threads. LuaJIT's default allocator on x64 is not
 		-- thread-safe across separate lua_State instances.
+		-- Long-running workers (like the audio mixer) can drop the mutex while
+		-- blocked in OS waits by calling back into these helpers, then re-take it
+		-- before their next Lua allocation.
 		if _worker_mutex then
+			_init_kernel32.WaitForSingleObject(_worker_mutex, _INFINITE)
+		end
+		_release_worker_mutex_of_this_thread = function()
+			_init_kernel32.ReleaseMutex(_worker_mutex)
+		end
+		_attain_worker_mutex_of_this_thread = function()
 			_init_kernel32.WaitForSingleObject(_worker_mutex, _INFINITE)
 		end
 
@@ -658,8 +683,19 @@ local worker_bootstrap = [=[
 		return callback_result
 	end
 
+	local function release_worker_mutex_of_this_thread()
+		if _release_worker_mutex_of_this_thread then _release_worker_mutex_of_this_thread() end
+	end
+
+	local function attain_worker_mutex_of_this_thread()
+		if _attain_worker_mutex_of_this_thread then _attain_worker_mutex_of_this_thread() end
+	end
+
 	_G.main_ref = main_protected
 	_G.main_ref_ptr = ffi.cast(ffi.os == "Windows" and "thread_callback" or "void *(*)(void *)", main_protected)
+
+	_G.release_worker_mutex_of_this_thread = release_worker_mutex_of_this_thread
+	_G.attain_worker_mutex_of_this_thread = attain_worker_mutex_of_this_thread
 
     return tostring(ffi.new("uintptr_t", ffi.cast("uintptr_t", _G.main_ref_ptr)))
 ]=]
@@ -901,7 +937,9 @@ do
 		end
 
 		while true do
+			if ffi.os == "Windows" then release_worker_mutex_of_this_thread() end
 			threads.wait_pool_work(control)
+			if ffi.os == "Windows" then attain_worker_mutex_of_this_thread() end
 
 			if control.should_exit == 1 then break end
 

@@ -4,6 +4,7 @@ local vfs = import("goluwa/vfs.lua")
 local file_path = import("goluwa/filesystem/path.lua")
 local codec = import("goluwa/codec.lua")
 local utility = import("goluwa/utility.lua")
+local system = import("goluwa/system.lua")
 local Entity = import("goluwa/entities/entity.lua")
 return function(steam)
 	commands.Add("mount=string", function(game)
@@ -243,12 +244,29 @@ return function(steam)
 		return true
 	end
 
+	local function get_manifest_signature(libraries)
+		local manifests = {}
+
+		for _, library in ipairs(libraries) do
+			for _, path in ipairs(vfs.Find(library .. "appmanifest_.-%.acf$")) do
+				if not file_path.IsPathAbsolutePath(path) then path = library .. path end
+
+				manifests[#manifests + 1] = path .. "\n" .. (vfs.Read(path, "r") or "")
+			end
+		end
+
+		table.sort(manifests)
+		return table.concat(manifests, "\n")
+	end
+
 	function steam.GetGames()
 		local function get_games_cache()
 			local current_libraries = steam.GetLibraryFolders()
+			local manifest_signature = get_manifest_signature(current_libraries)
 
 			if
 				steam.games_cache and
+				steam.games_cache.manifest_signature == manifest_signature and
 				are_cached_library_folders_valid(steam.games_cache.library_folders, current_libraries)
 			then
 				return steam.games_cache.games, current_libraries
@@ -260,6 +278,7 @@ return function(steam)
 
 			if
 				cached.games and
+				cached.manifest_signature == manifest_signature and
 				are_cached_library_folders_valid(cached.library_folders, current_libraries)
 			then
 				steam.games_cache = cached
@@ -369,11 +388,13 @@ return function(steam)
 			"cache/steam_games",
 			{
 				library_folders = current_libraries,
+				manifest_signature = get_manifest_signature(current_libraries),
 				games = found,
 			}
 		)
 		steam.games_cache = {
 			library_folders = current_libraries,
+			manifest_signature = get_manifest_signature(current_libraries),
 			games = found,
 		}
 		return found
@@ -449,9 +470,11 @@ return function(steam)
 
 		local function get_source_games_cache()
 			local current_libraries = steam.GetLibraryFolders()
+			local manifest_signature = get_manifest_signature(current_libraries)
 
 			if
 				steam.source_games_cache and
+				steam.source_games_cache.manifest_signature == manifest_signature and
 				are_cached_library_folders_valid(steam.source_games_cache.library_folders, current_libraries)
 			then
 				return steam.source_games_cache.games, current_libraries
@@ -463,6 +486,7 @@ return function(steam)
 
 			if
 				cached.games and
+				cached.manifest_signature == manifest_signature and
 				are_cached_library_folders_valid(cached.library_folders, current_libraries)
 			then
 				steam.source_games_cache = cached
@@ -497,6 +521,7 @@ return function(steam)
 						"cache/source_games",
 						{
 							library_folders = current_libraries,
+							manifest_signature = get_manifest_signature(current_libraries),
 							games = found,
 						}
 					)
@@ -609,7 +634,7 @@ return function(steam)
 						for _, path in pairs(tbl) do
 							if path:find("|", nil, true) then
 								path = path:replace("|gameinfo_path|", vdf_directory)
-								path = path:replace("|all_source_engine_paths|", dir)
+								path = path:replace("|all_source_engine_paths|", gameinfo.game_dir)
 							end
 
 							if not file_path.IsPathAbsolutePath(path) then
@@ -654,7 +679,7 @@ return function(steam)
 										end
 									end
 
-									if path:sub(1, 1) ~= "/" then
+									if not file_path.IsPathAbsolutePath(path) then
 										test = gameinfo.game_dir .. path
 
 										if not vfs.IsDirectory(path) and vfs.IsDirectory(test) then
@@ -699,11 +724,13 @@ return function(steam)
 			"cache/source_games",
 			{
 				library_folders = current_libraries,
+				manifest_signature = get_manifest_signature(current_libraries),
 				games = found,
 			}
 		)
 		steam.source_games_cache = {
 			library_folders = current_libraries,
+			manifest_signature = get_manifest_signature(current_libraries),
 			games = found,
 		}
 		return found

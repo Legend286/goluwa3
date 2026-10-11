@@ -282,3 +282,9 @@ When a physically correct model changes the established look (e.g. PCSS with the
 
 **Why:** said "much better than before, even at a clear day" on 2026-09-27 after the cloud-cover PCSS change.
 **How to apply:** don't add special cases just to preserve the old look; derive from the physics or the reference engine and mention the visible change. Related: [Crysis vegetation bending](crysis.md#crysis-vegetation-bending).
+
+## Ray-traced reflection material detail and visibility
+
+On ray-query hardware, opaque and water reflections use the nearest scene hit as the authority for visibility. SSR is used only when ray tracing is unavailable or disabled. Blending an unrelated screen-space hit over a solid RT hit can show distant buildings through the reflected balcony wall.
+
+Reflection pipelines bind the soup UV buffer as well as triangles and materials. Interpolate hit UVs and vertex blend weights from ray-query barycentrics, sample the albedo texture at the hit, and apply the second albedo/blend-modulate textures where present. DDGI's averaged albedo is suitable for diffuse probe lighting but loses the texture detail needed for reflections. Candidate intersections also run the shared alpha-cutout test; transparent geometry is skipped. Terrain retains its existing world-space material sampling. This is single-bounce hit shading, so secondary specular reflections are not reproduced.

@@ -120,9 +120,10 @@ if ffi.os == "Windows" then
 	function crash_trace.Install()
 		if installed then return end
 
-		installed_handlers.vectored_exception = ffi.cast("PVECTORED_EXCEPTION_HANDLER", handle_windows_exception)
 		installed_handlers.unhandled_exception = ffi.cast("PTOP_LEVEL_EXCEPTION_FILTER", handle_windows_exception)
-		installed_handlers.vectored_handle = kernel32.AddVectoredExceptionHandler(1, installed_handlers.vectored_exception)
+		-- do not register a vectored exception handler: LuaJIT raises first-chance
+		-- exceptions internally to unwind lua errors across ffi/c frames, and a
+		-- first-chance VEH corrupts those unwinds ("bad callback" lua panics)
 		kernel32.SetUnhandledExceptionFilter(installed_handlers.unhandled_exception)
 		installed = true
 	end

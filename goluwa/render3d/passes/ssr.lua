@@ -10,7 +10,7 @@ local compute_helpers = import("goluwa/render3d/compute_helpers.lua")
 local scene_reflection = import("goluwa/render3d/scene_reflection.lua")
 local COMPUTE_LOCAL_SIZE = {x = 8, y = 8, z = 1}
 local RAY_QUERY = scene_reflection.RAY_QUERY
-local REFLECTION_BINDINGS = {scene = 5, triangles = 6, materials = 7, light_grid = 9}
+local REFLECTION_BINDINGS = {scene = 5, triangles = 6, materials = 7, light_grid = 9, uvs = 10}
 return {
 	{
 		name = "ssr",
@@ -161,7 +161,6 @@ return {
 
 			ivec2 ssr_size;
 			ivec2 gbuffer_size;
-			vec2 gbuffer_ratio;
 			vec4 inv_projection_row_z;
 			vec4 inv_projection_row_w;
 			float max_hit_luminance;
@@ -377,7 +376,6 @@ return {
 			}
 
 			vec4 cast_ssr_ray(vec3 world_pos, vec3 pos_vs, vec3 N, vec3 geometric_N, vec3 V, float roughness, vec2 xi) {
-				if (ssr_data.last_frame_tex == -1) return vec4(0.0);
 				if (roughness > SSR_ROUGHNESS_CUTOFF) return vec4(0.0);
 
 				// a normal map can turn a pixel away from the camera, which would
@@ -410,13 +408,11 @@ return {
 
 				if (below < 0.01) R_vs = normalize(R_vs + geometric_N_vs * (0.01 - 2.0 * below));
 
-				vec4 hit = trace_ssr_direction(pos_vs, R_vs, roughness, xi.y);
 				vec3 R_world = (ssr_data.inv_view * vec4(R_vs, 0.0)).xyz;
 
 				#ifdef SCENE_REFLECTION
-				// what the screen doesn't hold (off screen, behind something or
-				// facing the camera) is traced; faded screen hits blend into it
-				if (scene_reflection_ready() && hit.a < 0.999) {
+				// The scene hit owns visibility; screen-space hits cannot override its occluder.
+				if (scene_reflection_ready()) {
 					vec3 origin = world_pos + geometric_N * (0.02 + 0.002 * -pos_vs.z);
 					float traced_t;
 					vec3 traced = trace_scene_reflection(origin, R_world, N, roughness, SCENE_REFLECTION_MAX_DISTANCE, traced_t);
@@ -429,9 +425,13 @@ return {
 						if (traced_luma > traced_limit) traced *= traced_limit / traced_luma;
 					}
 
-					return vec4(mix(traced, hit.rgb, hit.a), 1.0);
+					return vec4(traced, 1.0);
 				}
 				#endif
+
+				if (ssr_data.last_frame_tex == -1) return vec4(0.0);
+
+				vec4 hit = trace_ssr_direction(pos_vs, R_vs, roughness, xi.y);
 
 				// lighting fills the rest with its sky visibility aware environment
 				return hit.a > 0.0 ? hit : vec4(0.0);
@@ -441,14 +441,13 @@ return {
 				ivec2 pos = get_screen_pos();
 				ssr_size = imageSize(out_ssr);
 				gbuffer_size = textureSize(TEXTURE(ssr_data.depth_tex), 0);
-				gbuffer_ratio = vec2(gbuffer_size) / vec2(ssr_size);
 				mat4 inv_projection = ssr_data.inv_projection;
 				inv_projection_row_z = vec4(inv_projection[0][2], inv_projection[1][2], inv_projection[2][2], inv_projection[3][2]);
 				inv_projection_row_w = vec4(inv_projection[0][3], inv_projection[1][3], inv_projection[2][3], inv_projection[3][3]);
 				max_hit_luminance = ssr_data.exposure_tex != -1 ? SSR_MAX_HIT_LUMINANCE / max(texture(TEXTURE(ssr_data.exposure_tex), vec2(0.5)).r, 1e-8) : 1e30;
 				ivec2 local_pos = ivec2(gl_LocalInvocationID.xy);
 				bool in_bounds = is_screen_pos_in_bounds(pos, ssr_size);
-				ivec2 gbuffer_pos = min(pos * ivec2(gbuffer_ratio) + get_ssr_quad_offset(ssr_data.frame_index, gbuffer_ratio), gbuffer_size - 1);
+				ivec2 gbuffer_pos = min(get_ssr_gbuffer_pos(pos, ssr_data.frame_index, gbuffer_size, ssr_size), gbuffer_size - 1);
 				vec2 uv = (vec2(gbuffer_pos) + 0.5) / vec2(gbuffer_size);
 				float depth = in_bounds ? gbuffer_depth(gbuffer_pos) : 1.0;
 				vec4 current = vec4(0.0);

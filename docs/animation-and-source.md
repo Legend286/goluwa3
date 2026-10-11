@@ -12,7 +12,7 @@ Skinning is on the GPU (goluwa/render3d/skinning.lua, one dispatch for all anima
 
 Source format gotchas (all verified on gmod player models):
 - player models only have `reference`; animations come from `$includemodel` (m_anm/f_anm) and live in `.ani` animblocks (block 0 = in the mdl, relative to the animdesc; else relative to block datastart in the .ani)
-- clip names are sequences, not the `@` animdescs; walk/run are 3x3 blends over move_x/move_y (-1..1), so default 0,0 = standing — set `SetPoseParameterByName("move_x", 1)`
+- clip names are sequences, not the `@` animdescs; walk/run are 3x3 blends over move_x/move_y (-1..1), so default 0,0 = standing â€” set `SetPoseParameterByName("move_x", 1)`
 - ANIMROT/ANIMPOS values decode against the *owning* file's bone pos/rot/scales; remap bone index by name to the main skeleton
 - missing includes (vortigaunt m_gst etc.) are logged and skipped, not fatal
 - vertices of a mesh start at `mstudiomodel.vertexindex/48 + mstudiomesh.vertexoffset` in the vvd; the old "sum of max vertex index" guess broke TF2 and zombie_classic. mdl v49 (tob_magilou) has a 33 byte vtx strip group header instead of 25
@@ -91,3 +91,9 @@ test/harnesses/specgrid/gen.lua writes flat-colour VTFs + VMTs into GarrysMod/ga
 - Windows: `main_protected` in bindings/threads.lua holds a process wide mutex for the whole worker loop, so pool workers 2..N probably block. Not addressed (Linux only).
 
 Related: [Perf measurement pitfalls](performance.md#measuring-correctly), [gm_construct_m3 profiling](performance.md#what-cost-what)
+
+## Windows map launch discovery and worker locks
+
+Steam discovery caches must track app manifests as well as library folders: installing Garry's Mod in an existing library otherwise leaves `gm_construct` undiscoverable until caches are rebuilt. Source search paths must replace `|all_source_engine_paths|` with the owning game directory and recognize Windows drive paths before prepending it.
+
+Windows LuaJIT worker mutex names include the process ID. A fixed global name lets an idle worker in another engine instance block a fresh launch. Persistent pool workers release the execution mutex while waiting for work and reacquire it before processing the job. Nested codec-pool waits inside test workers can still hang (`codecs/codec_threads.lua`); the real main-thread map launch and `source_engine/mount.lua` were verified on 2026-10-11.

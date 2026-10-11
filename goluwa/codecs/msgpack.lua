@@ -580,11 +580,9 @@ local ljp_unpack = function(s, offset)
 
 	if type(s) ~= "string" then return false, "invalid argument" end
 
-	sbuffer_init(buffer)
-	sbuffer_append_str(buffer, s, #s)
+	local buf = {data = ffi.cast("const unsigned char *", s), size = #s}
 	local data
-	offset, data = unpackers.dynamic(buffer, offset)
-	sbuffer_destroy(buffer)
+	offset, data = unpackers.dynamic(buf, offset)
 	return offset, data
 end
 local ljp_pack_raw = function(raw)

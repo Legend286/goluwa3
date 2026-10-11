@@ -10,3 +10,4 @@ test/harnesses/**/*.log
 test/harnesses/**/out/
 test/harnesses/**/*.glwp
 test/harnesses/**/*.pgm
+/.freebuff
